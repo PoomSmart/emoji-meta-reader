@@ -129,7 +129,8 @@ int main(int argc, char *argv[], char *envp[]) {
         if (cemoji) {
             if (modern) {
                 uint32_t d0 = metadata[0];
-                uint32_t baseIndex = metadata[1];
+                uint32_t d1 = metadata[1];
+                uint32_t baseIndex = d1;
                 if (baseIndex >= count)
                     baseIndex = 0;
                 uint32_t descPos = metadata[3];
@@ -140,8 +141,8 @@ int main(int argc, char *argv[], char *envp[]) {
                 // 60000200 00000000 92000100 E19F0100 -> 0x00020060    0x00000000      0x00010092      0x00019FE1
                 if (out) {
                     metadata_l[0] = (uint16_t)d0;
-                    metadata_l[1] = baseIndex;
-                    metadata_l[2] = 0;
+                    metadata_l[1] = d1 & 0xFFFF;
+                    metadata_l[2] = d1 >> 16;
                     metadata_l[3] = emojiptr_w & 0xFFFF;
                     metadata_l[4] = emojiptr_w >> 16;
                     metadata_l[5] = descPos & 0xFFFF;
