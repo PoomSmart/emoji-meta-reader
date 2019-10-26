@@ -3,29 +3,29 @@
 
 bool modern = false;
 
-bool hasSkin(uint32_t d0) {
+bool has_skin(uint32_t d0) {
     return d0 & 0x40;
 }
 
 // TODO: correct?
-bool isCommon(uint32_t d0) {
+bool is_common(uint32_t d0) {
     return d0 & 0x80;
 }
 
-int skinTone(uint32_t d0) {
+int skin_tone(uint32_t d0) {
     return modern ? ((d0 >> 20) & 0xF) : d0 >> 12;
 }
 
-bool hasHair(uint32_t d0) {
+bool has_hair(uint32_t d0) {
     return d0 & 0x100;
 }
 
-int hairStyle(uint32_t d0) {
+int hair_style(uint32_t d0) {
     return d0 >> 24;
 }
 
 // TODO: correct?
-int presentationStyle(uint32_t d0) {
+int presentation_style(uint32_t d0) {
     if (d0 & 0x20)
         return 1;
     if (d0 & 0x10)
@@ -33,7 +33,7 @@ int presentationStyle(uint32_t d0) {
     return 0;
 }
 
-/* bool genderLike(uint32_t d0) {
+/* bool gender_like(uint32_t d0) {
     return d0 & 0x4;
 } */
 
@@ -52,7 +52,7 @@ char gender(uint32_t d0) {
     return '-';
 }
 
-void readStr(FILE *fp, char *str) {
+void read_str(FILE *fp, char *str) {
     char b;
     size_t n = 0;
     while ((b = fgetc(fp)) != EOF && b != '\0')
@@ -68,7 +68,7 @@ int main(int argc, char *argv[], char *envp[]) {
         return EXIT_FAILURE;
     }
     modern = atoi(argv[1]) == 1;
-    unsigned char buf[2];
+    uint16_t buf[1];
     FILE *fp, *fo;
     const char *filename = argv[2];
 
@@ -87,25 +87,22 @@ int main(int argc, char *argv[], char *envp[]) {
     }
 
     fread(buf, 2, 1, fp);
-    int count = (buf[1] << 8) | buf[0];
+    int count = buf[0];
     printf("Emoji count: %d\n", count);
-    int16_t eptr = (buf[0] << 8) | buf[1];
-    uint16_t reptr = ((eptr & 0xf) << 12) | ((eptr & 0xf0) << 4) | ((eptr & 0xf00) >> 4) | ((eptr & 0xf000) >> 12);
-    printf("Emoji string pointer: %x\n", reptr);
     fread(buf, 2, 1, fp);
-    uint16_t taiwanFlagIndex = buf[0];
-    printf("Taiwan flag index: 0x%x\n", taiwanFlagIndex); // TODO: is it?
+    printf("Taiwan flag index: 0x%x\n", buf[0]);
 
     if (out) {
         fwrite(&count, 2, 1, fo);
-        fwrite(&taiwanFlagIndex, 2, 1, fo);
+        fwrite(&buf, 2, 1, fo);
     }
 
-    // unknown 4 bytes skipped
+    uint32_t fs[1];
+    fread(fs, 4, 1, fp);
+    printf("File size: 0x%x\n", fs[0]);
     if (out) {
-        unsigned char unk[4];
-        fread(unk, 4, 1, fp);
-        fwrite(unk, 4, 1, fo);
+        fs[0] -= (16 - 14) * count;
+        fwrite(fs, 4, 1, fo);
     }
 
     uint16_t metaptr = 8;
@@ -127,7 +124,7 @@ int main(int argc, char *argv[], char *envp[]) {
             fread(metadata_l, sizeof(uint16_t), 7, fp);
         uint32_t emojiptr = modern ? metadata[2] : ((metadata_l[4] << 16) | metadata_l[3]);
         fseek(fp, emojiptr, SEEK_SET);
-        readStr(fp, emoji);
+        read_str(fp, emoji);
         CFStringRef cemoji = CFStringCreateWithCString(kCFAllocatorDefault, emoji, kCFStringEncodingUTF8);
         if (cemoji) {
             if (modern) {
@@ -137,7 +134,7 @@ int main(int argc, char *argv[], char *envp[]) {
                     baseIndex = 0;
                 uint32_t descPos = metadata[3];
                 fseek(fp, descPos, SEEK_SET);
-                readStr(fp, desc);
+                read_str(fp, desc);
                 // [idx] emoji : variant base-idx? str-pos desc-pos (...)
                 // 80000000 0000BF00 C8D00000 E4550100 -> 0x00000080    0x00BF0000      0x0000D0C8      0x000155E4
                 // 60000200 00000000 92000100 E19F0100 -> 0x00020060    0x00000000      0x00010092      0x00019FE1
@@ -161,18 +158,18 @@ int main(int argc, char *argv[], char *envp[]) {
                     strcpy(desc_w[index - 1], desc);
                     metaptr_w += 14;
                 }
-                NSLog(@"[0x%-3x] %@  :  0x%-10x  [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, cemoji, d0, baseIndex, emojiptr, descPos, hasSkin(d0), baseIndex ? skinTone(d0) : 0, baseIndex, hasHair(d0), hairStyle(d0), gender(d0), presentationStyle(d0), isCommon(d0), strlen(desc) ? desc : "<none>");
+                NSLog(@"[0x%-3x] %@  :  0x%-10x  [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, cemoji, d0, baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
             } else {
                 uint16_t d0 = metadata_l[0];
                 uint16_t baseIndex = metadata_l[1];
                 uint16_t d2 = metadata_l[2];
                 uint32_t descPos = (metadata_l[6] << 16) | metadata_l[5];
                 fseek(fp, descPos, SEEK_SET);
-                readStr(fp, desc);
+                read_str(fp, desc);
                 // [idx] emoji : variant base-idx ?? str-pos desc-pos (...)
                 // 8000 0000 BF00 02980000 8FFC0000 -> 0x0080     0x0000     0x00BF     0x00009802     0x0000FC8F
                 // 2011 840A 0000 D7F80000 2E4E0100 -> 0x1120     0x0A84     0x0000     0x0000F8D7     0x00014E2E
-                NSLog(@"[0x%-3x] %@  :  0x%-4x  0x%x  0x%x  [0x%-5x]  [0x%-5x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)\n", index, cemoji, d0, baseIndex, d2, emojiptr, descPos, hasSkin(d0), baseIndex ? skinTone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
+                NSLog(@"[0x%-3x] %@  :  0x%-4x  0x%x  0x%x  [0x%-5x]  [0x%-5x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)\n", index, cemoji, d0, baseIndex, d2, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
             }
             CFRelease(cemoji);
         }
