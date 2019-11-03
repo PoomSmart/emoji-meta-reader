@@ -170,11 +170,11 @@ int main(int argc, char *argv[], char *envp[]) {
                                 break;
                             }
                             case 0: {
-                                metadata_ll[0] = (uint16_t)d0;
-                                metadata_ll[1] = (uint16_t)baseIndex;
-                                metadata_ll[2] = (uint16_t)d1;
-                                metadata_ll[3] = (uint16_t)emojiptr_w;
-                                metadata_ll[4] = (uint16_t)descPos;
+                                metadata_ll[0] = d0;
+                                metadata_ll[1] = baseIndex;
+                                metadata_ll[2] = d1 >> 16;
+                                metadata_ll[3] = emojiptr_w; // WILL OVERFLOW when emojiptr_w > 0xFFFF
+                                metadata_ll[4] = descPos; // WILL OVERFLOW when descPos > 0xFFFF
                                 break;
                             }
                         }
