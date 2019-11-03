@@ -248,6 +248,12 @@ int main(int argc, char *argv[], char *envp[]) {
             metaptr_w += opad;
             ++index;
         }
+        if (outtype == 0) {
+            // iOS 10.1.1 cannot read more than 3206 emojis
+            fseek(fo, 0, SEEK_SET);
+            int max_10_1_1 = 3206;
+            fwrite(&max_10_1_1, 2, 1, fo);
+        }
         fclose(fo);
     }
 
