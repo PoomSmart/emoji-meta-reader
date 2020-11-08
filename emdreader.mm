@@ -1,6 +1,8 @@
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
+#import <CoreFoundation/CoreFoundation.h>
+#import <Foundation/Foundation.h>
 
 bool modern = false;
 
