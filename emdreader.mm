@@ -1,6 +1,8 @@
+#include <cstdlib>
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 
@@ -36,10 +38,6 @@ int presentation_style(uint32_t d0) {
     return 0;
 }
 
-/* bool gender_like(uint32_t d0) {
-    return d0 & 0x4;
-} */
-
 char gender(uint32_t d0) {
     if (modern) {
         if (d0 & 0x20000)
@@ -63,34 +61,68 @@ void read_str(FILE *fp, char *str) {
     str[n] = '\0';
 }
 
-int main(int argc, char *argv[], char *envp[]) {
-    if (argc != 3 && argc != 5) {
-        printf("Usage: emdreader [0/1/2] <path-to-metadata-dat>\n");
-        printf("Usage: emdreader 2 <input-dat> [0/1] <output-dat>\n");
-        printf("2 = iOS 12.1+, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
-        return EXIT_FAILURE;
-    }
-    FILE *fp, *fo;
-    const char *filename = argv[2];
+bool is_valid_mode(int m) {
+    return m == 0 || m == 1 || m == 2;
+}
 
-    if ((fp = fopen(filename, "rb")) == NULL) {
-        printf("Unable to open file for read: %s\n", filename);
-        return EXIT_FAILURE;
+void usage() {
+    printf("Usage: emdreader -r <import-mode> -i <path-to-metadata-dat>\n");
+    printf("Usage: emdreader -r <import-mode> -i <input-dat> -e <export-mode> -o <output-dat>\n");
+    printf("Mode: 2 = iOS 12.1+, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
+}
+
+int main(int argc, char *argv[], char *envp[]) {
+    int opt;
+    int intype = -1;
+    int outtype = -1;
+    int filter = 0xffffff;
+    FILE *fp, *fo;
+    bool out = false;
+    while ((opt = getopt(argc, argv, "r:i:o:e:f:h")) != -1) {
+        switch (opt) {
+            case 'r':
+                intype = atoi(strdup(optarg));
+                if (!is_valid_mode(intype)) {
+                    printf("Invalid import mode: %d\n", intype);
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'e':
+                outtype = atoi(strdup(optarg));
+                break;
+            case 'i': {
+                const char *infile = strdup(optarg);
+                if ((fp = fopen(infile, "rb")) == NULL) {
+                    printf("Unable to open file for read\n");
+                    return EXIT_FAILURE;
+                }
+                break;
+            }
+            case 'o': {
+                const char *outfile = strdup(optarg);
+                fo = fopen(outfile, "wb+");
+                break;
+            }
+            case 'f': {
+                filter = strtoul(strdup(optarg), NULL, 16);
+                break;
+            }
+            case 'h':
+                usage();
+                return EXIT_SUCCESS;
+        }
     }
-    bool out = argc == 5;
-    if (out && (fo = fopen(argv[4], "wb+")) == NULL) {
-        printf("Unable to open file for write: %s\n", argv[3]);
-        return EXIT_FAILURE;
-    }
-    if (out && strcmp(filename, argv[4]) == 0) {
-        printf("Input file and output file cannot be the same\n");
-        return EXIT_FAILURE;
+
+    if (is_valid_mode(outtype)) {
+        if (fo == NULL) {
+            printf("Unable to open file for write\n");
+            return EXIT_FAILURE;
+        }
+        out = true;
     }
 
     uint16_t buf[1];
-    int intype = atoi(argv[1]);
     modern = intype == 2;
-    int outtype = out ? atoi(argv[3]) : -1;
     uint16_t paddings[] = { 10, 14, 16 };
     uint16_t pad = paddings[intype];
     uint16_t opad = out ? paddings[outtype] : 0;
@@ -200,7 +232,9 @@ int main(int argc, char *argv[], char *envp[]) {
                         strcpy(desc_w[index - 1], desc);
                         metaptr_w += opad;
                     }
-                    NSLog(@"[0x%-3x] %@  :  0x%-10x  [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, cemoji, d0, baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
+                    if (filter & d0) {
+                        NSLog(@"[0x%-3x] %@  :  %08x %08x | %08x %08x  [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, cemoji, d0, d1, htonl(d0), htonl(d1), baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
+                    }
                     break;
                 }
                 case 1: {
