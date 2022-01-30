@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <Foundation/Foundation.h>
 
 bool modern = false;
 
@@ -66,8 +65,8 @@ bool is_valid_mode(int m) {
 }
 
 void usage() {
-    printf("Usage: emdreader -r <import-mode> -i <path-to-metadata-dat>\n");
-    printf("Usage: emdreader -r <import-mode> -i <input-dat> -e <export-mode> -o <output-dat>\n");
+    printf("Usage: emdreader -i <path-to-metadata-dat>\n");
+    printf("Usage: emdreader -i <input-dat> -e <export-mode> -o <output-dat>\n");
     printf("Mode: 2 = iOS 12.1+, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
 }
 
@@ -78,15 +77,8 @@ int main(int argc, char *argv[], char *envp[]) {
     int filter = 0xffffff;
     FILE *fp, *fo;
     bool out = false;
-    while ((opt = getopt(argc, argv, "r:i:o:e:f:h")) != -1) {
+    while ((opt = getopt(argc, argv, "i:o:e:f:h")) != -1) {
         switch (opt) {
-            case 'r':
-                intype = atoi(strdup(optarg));
-                if (!is_valid_mode(intype)) {
-                    printf("Invalid import mode: %d\n", intype);
-                    return EXIT_FAILURE;
-                }
-                break;
             case 'e':
                 outtype = atoi(strdup(optarg));
                 break;
@@ -122,13 +114,22 @@ int main(int argc, char *argv[], char *envp[]) {
     }
 
     uint16_t buf[1];
-    modern = intype == 2;
     uint16_t paddings[] = { 10, 14, 16 };
-    uint16_t pad = paddings[intype];
-    uint16_t opad = out ? paddings[outtype] : 0;
 
     fread(buf, 2, 1, fp);
     int count = buf[0];
+    if (count >= 2937) {
+        intype = 2;
+    } else if (count >= 2538) {
+        intype = 1;
+    } else { // 2028
+        intype = 0;
+    }
+    modern = intype == 2;
+    uint16_t pad = paddings[intype];
+    uint16_t opad = out ? paddings[outtype] : 0;
+
+    printf("Detected file variant: %d\n", intype);
     printf("Emoji count: %d\n", count);
     fread(buf, 2, 1, fp);
     printf("Taiwan flag index: 0x%x\n", buf[0]);
@@ -233,7 +234,7 @@ int main(int argc, char *argv[], char *envp[]) {
                         metaptr_w += opad;
                     }
                     if (filter & d0) {
-                        NSLog(@"[0x%-3x] %@  :  %08x %08x | %08x %08x  [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, cemoji, d0, d1, htonl(d0), htonl(d1), baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
+                        printf("[0x%-3x] %s  :  %08x %08x | [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, emoji, d0, d1, baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
                     }
                     break;
                 }
@@ -247,7 +248,7 @@ int main(int argc, char *argv[], char *envp[]) {
                     // [idx] emoji : variant base-idx ?? str-pos desc-pos (...)
                     // 8000 0000 BF00 02980000 8FFC0000 -> 0x0080     0x0000     0x00BF     0x00009802     0x0000FC8F
                     // 2011 840A 0000 D7F80000 2E4E0100 -> 0x1120     0x0A84     0x0000     0x0000F8D7     0x00014E2E
-                    NSLog(@"[0x%-3x] %@  :  0x%-4x  0x%x  0x%x  [0x%-5x]  [0x%-5x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)\n", index, cemoji, d0, baseIndex, d2, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
+                    printf("[0x%-3x] %s  :  0x%-4x  0x%x  0x%x  [0x%-5x]  [0x%-5x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)\n", index, emoji, d0, baseIndex, d2, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
                     break;
                 }
                 case 0: {
@@ -259,7 +260,7 @@ int main(int argc, char *argv[], char *envp[]) {
                     read_str(fp, desc);
                     // [idx] emoji : variant base-idx ?? str-pos desc-pos
                     // 8000 0000 BF00 404F 1C90 ->  0x0080    0x0000    0x00BF    0x4F40    0x901C
-                    NSLog(@"[0x%-3x] %@  :  0x%-4x  [0x%x]  0x%x  [0x%x] [0x%x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)", index, cemoji, d0, baseIndex, d2, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
+                    printf("[0x%-3x] %s  :  0x%-4x  [0x%x]  0x%x  [0x%x] [0x%x] (skin: %d-%d, base-idx: %x, gender: %c, desc: %s)\n", index, emoji, d0, baseIndex, d2, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, gender(d0), strlen(desc) ? desc : "<none>");
                     break;
                 }
             }

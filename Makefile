@@ -5,11 +5,11 @@ include $(THEOS)/makefiles/common.mk
 
 TOOL_NAME = emdreader
 
-emdreader_FILES = emdreader.mm
-emdreader_CFLAGS = -fobjc-arc
+$(TOOL_NAME)_FILES = emdreader.mm
+$(TOOL_NAME)_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/tool.mk
 
 after-all::
 	@mkdir -p bin
-	@cp -v $(THEOS_OBJ_DIR)/emdreader bin/
+	@cp -v $(THEOS_OBJ_DIR)/$(TOOL_NAME) bin/
