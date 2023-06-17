@@ -242,7 +242,7 @@ int main(int argc, char *argv[], char *envp[]) {
                         strcpy(desc_w[index - 1], desc);
                         metaptr_w += opad;
                     }
-                    if (filter & d0) {
+                    if (filter == 0xffffff || filter & d0) {
                         printf("[0x%-3x] %s  :  %08x %08x | [0x%-3x]  [0x%x]  [0x%x]  (skin: %d-%d, base-idx: %x, hair: %d-%d, gender: %c, style: %d, common: %d, desc: %s)\n", index, emoji, d0, d1, baseIndex, emojiptr, descPos, has_skin(d0), baseIndex ? skin_tone(d0) : 0, baseIndex, has_hair(d0), hair_style(d0), gender(d0), presentation_style(d0), is_common(d0), strlen(desc) ? desc : "<none>");
                     }
                     break;
