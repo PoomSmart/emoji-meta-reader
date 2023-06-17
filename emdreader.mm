@@ -61,13 +61,13 @@ void read_str(FILE *fp, char *str) {
 }
 
 bool is_valid_mode(int m) {
-    return m == 0 || m == 1 || m == 2;
+    return m == 0 || m == 1 || m == 2 || m == 3;
 }
 
 void usage() {
     printf("Usage: emdreader -i <path-to-metadata-dat>\n");
     printf("Usage: emdreader -i <input-dat> -e <export-mode> -o <output-dat>\n");
-    printf("Mode: 2 = iOS 12.1+, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
+    printf("Mode: 3 = iOS 17.0+, 2 = iOS 12.1 - 16.6, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
 }
 
 int main(int argc, char *argv[], char *envp[]) {
@@ -122,14 +122,20 @@ int main(int argc, char *argv[], char *envp[]) {
         intype = 2;
     } else if (count >= 2538) {
         intype = 1;
+    } else if (count == 0) { 
+        intype = 3;
+        fread(buf, 2, 1, fp);
+        count = buf[0];
     } else { // 2028
         intype = 0;
     }
-    modern = intype == 2;
+    int actual_intype = intype;
+    modern = actual_intype >= 2;
+    if (intype > 2) intype = 2;
     uint16_t pad = paddings[intype];
     uint16_t opad = out ? paddings[outtype] : 0;
 
-    printf("Detected file variant: %d\n", intype);
+    printf("Detected file variant: %d\n", actual_intype);
     printf("Emoji count: %d\n", count);
     fread(buf, 2, 1, fp);
     printf("Taiwan flag index: 0x%x\n", buf[0]);
@@ -147,7 +153,7 @@ int main(int argc, char *argv[], char *envp[]) {
         fwrite(fs, 4, 1, fo);
     }
 
-    uint16_t metaptr = 8;
+    uint16_t metaptr = actual_intype == 3 ? 10 : 8;
     uint16_t metaptr_w = 8;
     uint32_t emojiptr_w = metaptr + count * opad;
     uint16_t metaptr_d = pad;
@@ -217,6 +223,9 @@ int main(int argc, char *argv[], char *envp[]) {
                         // write metadata
                         fseek(fo, metaptr_w, SEEK_SET);
                         switch (outtype) {
+                            case 2:
+                                fwrite(metadata, sizeof(uint32_t), 4, fo);
+                                break;
                             case 1:
                                 fwrite(metadata_l, sizeof(uint16_t), 7, fo);
                                 break;
