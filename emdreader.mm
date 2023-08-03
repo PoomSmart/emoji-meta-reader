@@ -114,7 +114,7 @@ int main(int argc, char *argv[], char *envp[]) {
     }
 
     uint16_t buf[1];
-    uint16_t paddings[] = { 10, 14, 16 };
+    uint16_t paddings[] = { 10, 14, 16, 16 };
 
     fread(buf, 2, 1, fp);
     int count = buf[0];
@@ -129,13 +129,12 @@ int main(int argc, char *argv[], char *envp[]) {
     } else { // 2028
         intype = 0;
     }
-    int actual_intype = intype;
-    modern = actual_intype >= 2;
-    if (intype > 2) intype = 2;
+    modern = intype >= 2;
     uint16_t pad = paddings[intype];
     uint16_t opad = out ? paddings[outtype] : 0;
+    uint16_t shift = intype == 3 ? 2 : 0;
 
-    printf("Detected file variant: %d\n", actual_intype);
+    printf("Detected file variant: %d\n", intype);
     printf("Emoji count: %d\n", count);
     fread(buf, 2, 1, fp);
     printf("Taiwan flag index: 0x%x\n", buf[0]);
@@ -150,10 +149,11 @@ int main(int argc, char *argv[], char *envp[]) {
     printf("File size: 0x%x\n", fs[0]);
     if (out) {
         fs[0] -= (pad - opad) * count;
+        fs[0] -= shift;
         fwrite(fs, 4, 1, fo);
     }
 
-    uint16_t metaptr = actual_intype == 3 ? 10 : 8;
+    uint16_t metaptr = 8;
     uint16_t metaptr_w = 8;
     uint32_t emojiptr_w = metaptr + count * opad;
     uint16_t metaptr_d = pad;
@@ -166,7 +166,7 @@ int main(int argc, char *argv[], char *envp[]) {
     char desc_w[count][256];
     int16_t index = 1;
     while (index <= count) {
-        fseek(fp, metaptr, SEEK_SET);
+        fseek(fp, metaptr + shift, SEEK_SET);
         uint32_t emojiptr = 0;
         switch (intype) {
             case 0:
@@ -178,6 +178,7 @@ int main(int argc, char *argv[], char *envp[]) {
                 emojiptr = (metadata_l[4] << 16) | metadata_l[3];
                 break;
             case 2:
+            case 3:
                 fread(metadata, sizeof(uint32_t), 4, fp);
                 emojiptr = metadata[2];
                 break;
@@ -187,7 +188,8 @@ int main(int argc, char *argv[], char *envp[]) {
         CFStringRef cemoji = CFStringCreateWithCString(kCFAllocatorDefault, emoji, kCFStringEncodingUTF8);
         if (cemoji) {
             switch (intype) {
-                case 2: {
+                case 2:
+                case 3: {
                     uint32_t d0 = metadata[0];
                     uint32_t d1 = metadata[1];
                     uint32_t baseIndex = d1;
@@ -201,6 +203,11 @@ int main(int argc, char *argv[], char *envp[]) {
                     // 60000200 00000000 92000100 E19F0100 -> 0x00020060    0x00000000      0x00010092      0x00019FE1
                     if (out) {
                         switch (outtype) {
+                            case 2: {
+                                metadata[2] -= shift;
+                                metadata[3] -= shift;
+                                break;
+                            }
                             case 1: {
                                 metadata_l[0] = (uint16_t)d0;
                                 metadata_l[1] = d1 & 0xFFFF;
@@ -283,13 +290,25 @@ int main(int argc, char *argv[], char *envp[]) {
         index = 1;
         metaptr_w = 8;
         uint32_t descPos_w = emojiptr_w;
+        uint16_t offset = 0;
+        switch (outtype) {
+            case 2:
+                offset = 12;
+                break;
+            case 1:
+                offset = 10;
+                break;
+            case 0:
+                offset = 8;
+                break;
+        }
         while (index <= count) {
             // write description
             fseek(fo, descPos_w, SEEK_SET);
             size_t desclen = strlen(desc_w[index - 1]) + 1;
             fwrite(desc_w[index - 1], desclen, 1, fo);
             // update metadata description position
-            fseek(fo, metaptr_w + (outtype == 1 ? 10 : 8), SEEK_SET);
+            fseek(fo, metaptr_w + offset, SEEK_SET);
             fwrite(&descPos_w, outtype == 0 ? sizeof(uint16_t) : sizeof(uint32_t), 1, fo);
             descPos_w += desclen;
             metaptr_w += opad;
