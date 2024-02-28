@@ -67,7 +67,7 @@ bool is_valid_mode(int m) {
 void usage() {
     printf("Usage: emdreader -i <path-to-metadata-dat>\n");
     printf("Usage: emdreader -i <input-dat> -e <export-mode> -o <output-dat>\n");
-    printf("Mode: 3 = iOS 17.0+, 2 = iOS 12.1 - 16.6, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
+    printf("Mode: 3 = iOS 17.0+, 2 = iOS 12.1 - 16.7, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
 }
 
 int main(int argc, char *argv[], char *envp[]) {
