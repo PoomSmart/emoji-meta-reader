@@ -1,5 +1,17 @@
-bin
-.theos
-.DS_Store
+bin/
+obj/
+.theos/
+
+# Generated metadata files
 *.dat
+
+# macOS
+.DS_Store
+
+# Generated headers
 *.h
+
+# Editor
+*.swp
+*.swo
+*~
