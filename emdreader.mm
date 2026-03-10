@@ -142,18 +142,25 @@ int main(int argc, char *argv[], char *envp[]) {
     uint16_t buf[1];
     uint16_t paddings[] = { 10, 14, 16, 16 };
 
-    fread(buf, 2, 1, fp);
-    int count = buf[0];
-    if (count >= 2937) {
-        intype = 2;
-    } else if (count >= 2538) {
-        intype = 1;
-    } else if (count == 0) {
+    uint32_t count32;
+    fread(&count32, 4, 1, fp);
+    int count;
+    if ((count32 & 0xFFFF) == 0) {
         intype = 3;
-        fread(buf, 2, 1, fp);
-        count = buf[0];
-    } else { // 2028
-        intype = 0;
+        count = count32 >> 16;
+    } else if ((count32 >> 16) == 0) {
+        intype = 3;
+        count = count32 & 0xFFFF;
+    } else {
+        count = count32 & 0xFFFF;
+        fseek(fp, 2, SEEK_SET);
+        if (count >= 2937) {
+            intype = 2;
+        } else if (count >= 2538) {
+            intype = 1;
+        } else { // 2028
+            intype = 0;
+        }
     }
     modern = intype >= 2;
     uint16_t pad = paddings[intype];
@@ -179,10 +186,10 @@ int main(int argc, char *argv[], char *envp[]) {
         fwrite(fs, 4, 1, fo);
     }
 
-    uint16_t metaptr = 8;
-    uint16_t metaptr_w = 8;
+    uint32_t metaptr = 8;
+    uint32_t metaptr_w = 8;
     uint32_t emojiptr_w = metaptr + count * opad;
-    uint16_t metaptr_d = pad;
+    uint32_t metaptr_d = pad;
     uint32_t metadata[4]; // iOS 12.1+
     uint16_t metadata_l[7]; // iOS 10.2 - 12.0
     uint16_t metadata_ll[5]; // iOS 10.1.1
@@ -190,7 +197,7 @@ int main(int argc, char *argv[], char *envp[]) {
     char emoji[64];
     char desc[256];
     std::vector<std::string> desc_w(count);
-    int16_t index = 1;
+    int index = 1;
     while (index <= count) {
         fseek(fp, metaptr + shift, SEEK_SET);
         uint32_t emojiptr = 0;
