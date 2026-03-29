@@ -3,9 +3,362 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <algorithm>
 #include <vector>
 #include <string>
+#include <utility>
 #import <CoreFoundation/CoreFoundation.h>
+#include <marisa.h>
+
+// CFBurstTrie private API — present in macOS CoreFoundation, used by iOS ≤16 format
+typedef void *CFBurstTrieRef;
+typedef void *CFBurstTrieCursorRef;
+// Callback: (context, key_bytes, key_len, payload_u32, flags)
+typedef void (*CFBurstTrieTraversalCallback)(void *, const uint8_t *, unsigned int, unsigned int, uint8_t *);
+extern "C" {
+    // Read APIs
+    CFBurstTrieRef     CFBurstTrieCreateFromMapBytes(char *buffer, unsigned long length);
+    CFBurstTrieCursorRef CFBurstTrieCreateCursorForBytes(CFBurstTrieRef, const uint8_t *, unsigned long);
+    void               CFBurstTrieSetCursorForBytes(CFBurstTrieRef, CFBurstTrieCursorRef, const uint8_t *, unsigned long);
+    void               CFBurstTrieTraverseFromCursor(CFBurstTrieCursorRef, void *, CFBurstTrieTraversalCallback);
+    void               CFBurstTrieRelease(CFBurstTrieRef);
+    void               CFBurstTrieCursorRelease(CFBurstTrieCursorRef);
+    // Write APIs (for Marisa→iOS16 conversion)
+    CFBurstTrieRef     CFBurstTrieCreate(void);
+    void               CFBurstTrieAddUTF8String(CFBurstTrieRef, uint8_t *, long, long);
+    unsigned char      CFBurstTrieSerializeWithFileDescriptor(CFBurstTrieRef, int);
+}
+
+struct CFBurstEntry { std::string key; uint32_t payload; };
+
+static void burst_trie_callback(void *ctx, const uint8_t *key, unsigned int keyLen,
+                                 unsigned int payload, uint8_t *) {
+    reinterpret_cast<std::vector<CFBurstEntry>*>(ctx)->push_back(
+        { std::string(reinterpret_cast<const char*>(key), keyLen), payload });
+}
+
+// Emoji keyword search index format (FindReplace.dat / CharacterPicker.dat)
+static constexpr uint32_t FINDREPLACE_MAGIC = 0x3FA8BDD1;
+
+// Convert iOS 17+ Marisa trie format → iOS 16 CFBurstTrie format.
+// Writes a new file at the path pointed to by `fo`.
+static int convert_findreplace_v16(FILE *fp, FILE *fo) {
+    struct {
+        uint32_t magic;
+        uint16_t version;
+        uint16_t flags;
+        uint32_t trie_blob_size;
+        uint32_t index_array_count;
+    } hdr;
+
+    if (fread(&hdr, sizeof(hdr), 1, fp) != 1 ||
+        hdr.magic != FINDREPLACE_MAGIC || hdr.version != 1) {
+        fprintf(stderr, "Error: Invalid header for FindReplace conversion\n");
+        return EXIT_FAILURE;
+    }
+    if (hdr.trie_blob_size < 4) {
+        fprintf(stderr, "Error: Trie blob too small\n");
+        return EXIT_FAILURE;
+    }
+
+    uint8_t *trie_blob = (uint8_t *)malloc(hdr.trie_blob_size);
+    if (!trie_blob || fread(trie_blob, 1, hdr.trie_blob_size, fp) != hdr.trie_blob_size) {
+        free(trie_blob);
+        fprintf(stderr, "Error: Failed to read trie blob\n");
+        return EXIT_FAILURE;
+    }
+
+    uint32_t first4 = *(uint32_t *)trie_blob;
+    if (first4 + 4 > hdr.trie_blob_size) {
+        // Already CFBurstTrie (iOS ≤16) — copy the file as-is
+        free(trie_blob);
+        fprintf(stderr, "Note: Source is already CFBurstTrie (iOS ≤16), copying verbatim\n");
+        fseek(fp, 0, SEEK_SET);
+        uint8_t copy_buf[65536];
+        size_t n;
+        while ((n = fread(copy_buf, 1, sizeof(copy_buf), fp)) > 0)
+            fwrite(copy_buf, 1, n, fo);
+        return EXIT_SUCCESS;
+    }
+
+    // Marisa trie: trie_blob = [uint32 inner_marisa_size][marisa_data][payload_table]
+    bool null_term = (hdr.flags & 1) != 0;
+    uint32_t inner_marisa_size = first4;
+    if ((uint64_t)inner_marisa_size + 4 + 4 > hdr.trie_blob_size) {
+        free(trie_blob);
+        fprintf(stderr, "Error: Marisa inner size exceeds blob\n");
+        return EXIT_FAILURE;
+    }
+    uint32_t payload_count = (hdr.trie_blob_size - inner_marisa_size - 4) / 4;
+    const uint32_t *payload_table = (const uint32_t *)(trie_blob + 4 + inner_marisa_size);
+
+    uint16_t *index_array = nullptr;
+    if (hdr.index_array_count > 0) {
+        index_array = (uint16_t *)malloc(hdr.index_array_count * sizeof(uint16_t));
+        if (!index_array ||
+            fread(index_array, sizeof(uint16_t), hdr.index_array_count, fp) != hdr.index_array_count) {
+            free(trie_blob);
+            free(index_array);
+            fprintf(stderr, "Error: Failed to read index array\n");
+            return EXIT_FAILURE;
+        }
+    }
+
+    // Load Marisa trie from memory
+    marisa::Trie marisa_trie;
+    try {
+        marisa_trie.map(trie_blob + 4, inner_marisa_size);
+    } catch (const marisa::Exception &e) {
+        free(trie_blob);
+        free(index_array);
+        fprintf(stderr, "Error: Marisa map failed: %s\n", e.what());
+        return EXIT_FAILURE;
+    }
+
+    if (marisa_trie.num_keys() != payload_count) {
+        fprintf(stderr, "Warning: Marisa key count (%zu) != payload count (%u)\n",
+                marisa_trie.num_keys(), payload_count);
+    }
+
+    // Enumerate all keys and collect their emoji indices
+    struct KV { std::string key; std::vector<uint16_t> indices; };
+    std::vector<KV> entries;
+    entries.reserve(payload_count);
+
+    marisa::Agent agent;
+    agent.set_query("");
+    while (marisa_trie.predictive_search(agent)) {
+        size_t key_id = agent.key().id();
+        uint32_t p = (key_id < payload_count) ? payload_table[key_id] : 0;
+        uint32_t start = p & 0x3FFFFF;
+        uint32_t count = (p >> 22) & 0x3FF;
+
+        std::vector<uint16_t> indices;
+        if (!null_term) {
+            for (uint32_t i = 0; i < count; ++i)
+                if (start + i < hdr.index_array_count)
+                    indices.push_back(index_array[start + i]);
+        } else {
+            for (uint32_t i = start; i < hdr.index_array_count && index_array[i]; ++i)
+                indices.push_back(index_array[i]);
+        }
+        entries.push_back({ std::string(agent.key().ptr(), agent.key().length()),
+                            std::move(indices) });
+    }
+
+    free(trie_blob);
+    free(index_array);
+
+    // Build new compact (count-based) index array and payload map
+    std::vector<uint16_t> new_index;
+    new_index.reserve(hdr.index_array_count);
+
+    CFBurstTrieRef bt = CFBurstTrieCreate();
+    for (auto &e : entries) {
+        uint32_t new_start = (uint32_t)new_index.size();
+        uint32_t new_count = std::min((uint32_t)e.indices.size(), (uint32_t)0x3FF);
+        for (uint32_t i = 0; i < new_count; ++i)
+            new_index.push_back(e.indices[i]);
+        uint32_t packed = new_start | (new_count << 22);
+        CFBurstTrieAddUTF8String(bt, (uint8_t *)e.key.data(), (long)e.key.size(), (long)packed);
+    }
+
+    // Serialize CFBurstTrie directly to the output file, then fix up the header.
+    // Write a placeholder header first so the blob follows immediately.
+    long hdr_offset = (long)lseek(fileno(fo), 0, SEEK_CUR);
+    fwrite(&hdr, sizeof(hdr), 1, fo);
+    fflush(fo);  // flush C buffer before raw fd write
+
+    long pos_before = (long)lseek(fileno(fo), 0, SEEK_CUR);
+    unsigned char ok = CFBurstTrieSerializeWithFileDescriptor(bt, fileno(fo));
+    CFBurstTrieRelease(bt);
+
+    if (!ok) {
+        fprintf(stderr, "Error: CFBurstTrieSerializeWithFileDescriptor failed\n");
+        return EXIT_FAILURE;
+    }
+
+    long pos_after = (long)lseek(fileno(fo), 0, SEEK_CUR);
+    long blob_len = pos_after - pos_before;
+
+    // Resync C FILE* position after raw fd writes, then append index array
+    fseek(fo, pos_after, SEEK_SET);
+    fwrite(new_index.data(), sizeof(uint16_t), new_index.size(), fo);
+
+    // Seek back and overwrite placeholder header with correct sizes
+    hdr.flags = 0x0000;
+    hdr.trie_blob_size = (uint32_t)blob_len;
+    hdr.index_array_count = (uint32_t)new_index.size();
+    fseek(fo, hdr_offset, SEEK_SET);
+    fwrite(&hdr, sizeof(hdr), 1, fo);
+
+    fprintf(stderr, "Converted: %zu keywords -> iOS 16 CFBurstTrie (%ld B blob, %u indices)\n",
+            entries.size(), blob_len, (uint32_t)new_index.size());
+    return EXIT_SUCCESS;
+}
+
+static int read_findreplace(FILE *fp) {
+    struct {
+        uint32_t magic;
+        uint16_t version;
+        uint16_t flags;
+        uint32_t trie_blob_size;
+        uint32_t index_array_count;
+    } hdr;
+    if (fread(&hdr, sizeof(hdr), 1, fp) != 1) {
+        fprintf(stderr, "Error: Failed to read header\n");
+        return EXIT_FAILURE;
+    }
+    if (hdr.magic != FINDREPLACE_MAGIC) {
+        fprintf(stderr, "Error: Invalid magic 0x%08X (expected 0x%08X)\n", hdr.magic, FINDREPLACE_MAGIC);
+        return EXIT_FAILURE;
+    }
+    if (hdr.version != 1) {
+        fprintf(stderr, "Error: Unsupported version %u\n", hdr.version);
+        return EXIT_FAILURE;
+    }
+    bool null_term = (hdr.flags & 1) != 0;
+
+    if (hdr.trie_blob_size < 4) {
+        fprintf(stderr, "Error: Trie blob too small\n");
+        return EXIT_FAILURE;
+    }
+
+    uint8_t *trie_blob = (uint8_t *)malloc(hdr.trie_blob_size);
+    if (!trie_blob) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return EXIT_FAILURE;
+    }
+    if (fread(trie_blob, 1, hdr.trie_blob_size, fp) != hdr.trie_blob_size) {
+        free(trie_blob);
+        fprintf(stderr, "Error: Failed to read trie blob\n");
+        return EXIT_FAILURE;
+    }
+
+    // Detect trie engine: if the first uint32 would overflow as a Marisa inner-size,
+    // the blob is a serialized CFBurstTrie (used by iOS ≤16).
+    uint32_t first4 = *(uint32_t *)trie_blob;
+    bool is_cft = (first4 + 4 > hdr.trie_blob_size);
+
+    printf("Format:             Emoji Keyword Search Index\n");
+    printf("Trie engine:        %s\n", is_cft ? "CFBurstTrie (iOS ≤16)" : "Marisa LOUDS (iOS 17+)");
+    printf("Version:            %u\n", hdr.version);
+    printf("Flags:              0x%04X%s\n", hdr.flags, null_term ? " [null-terminated]" : "");
+    printf("Trie blob size:     0x%X (%u bytes)\n", hdr.trie_blob_size, hdr.trie_blob_size);
+    printf("Index array count:  %u entries\n", hdr.index_array_count);
+
+    // --- Marisa-specific stats ---
+    uint32_t inner_marisa_size = 0;
+    uint32_t payload_count = 0;
+    const uint32_t *payload_table = nullptr;
+    if (!is_cft) {
+        inner_marisa_size = first4;
+        payload_count = (hdr.trie_blob_size - inner_marisa_size - 4) / 4;
+        payload_table = (const uint32_t *)(trie_blob + 4 + inner_marisa_size);
+        printf("Marisa trie size:   0x%X (%u bytes)\n", inner_marisa_size, inner_marisa_size);
+        printf("Keyword count:      %u\n", payload_count);
+        const uint8_t *marisa_data = trie_blob + 4;
+        bool ok = inner_marisa_size >= 15 &&
+                  *(uint64_t *)marisa_data == 0x2065766F6C206557ULL;
+        printf("Marisa signature:   %s\n", ok ? "OK" : "MISSING");
+    }
+
+    // --- Read index array ---
+    uint16_t *index_array = nullptr;
+    if (hdr.index_array_count > 0) {
+        index_array = (uint16_t *)malloc(hdr.index_array_count * sizeof(uint16_t));
+        if (!index_array) {
+            free(trie_blob);
+            fprintf(stderr, "Error: Out of memory\n");
+            return EXIT_FAILURE;
+        }
+        if (fread(index_array, sizeof(uint16_t), hdr.index_array_count, fp) != hdr.index_array_count) {
+            free(trie_blob);
+            free(index_array);
+            fprintf(stderr, "Error: Failed to read index array\n");
+            return EXIT_FAILURE;
+        }
+    }
+
+    // Helper to print the emoji indices for a given packed payload ref
+    auto print_indices = [&](uint32_t p) {
+        uint32_t start = p & 0x3FFFFF;
+        uint32_t count = (p >> 22) & 0x3FF;
+        printf("[");
+        if (!null_term) {
+            for (uint32_t j = 0; j < count; j++) {
+                if (start + j >= hdr.index_array_count) break;
+                if (j > 0) printf(", ");
+                printf("0x%X", index_array[start + j]);
+            }
+        } else {
+            uint32_t j = start;
+            bool first = true;
+            while (j < hdr.index_array_count && index_array[j]) {
+                if (!first) printf(", ");
+                printf("0x%X", index_array[j]);
+                first = false;
+                ++j;
+            }
+        }
+        printf("]");
+    };
+
+    if (is_cft) {
+        // --- CFBurstTrie path: enumerate using CoreFoundation API ---
+        CFBurstTrieRef trie = CFBurstTrieCreateFromMapBytes((char *)trie_blob, hdr.trie_blob_size);
+        if (!trie) {
+            free(trie_blob);
+            free(index_array);
+            fprintf(stderr, "Error: CFBurstTrieCreateFromMapBytes failed — blob may be corrupt\n");
+            return EXIT_FAILURE;
+        }
+        CFBurstTrieCursorRef cursor = CFBurstTrieCreateCursorForBytes(trie, nullptr, 0);
+        if (!cursor) {
+            CFBurstTrieRelease(trie);
+            free(trie_blob);
+            free(index_array);
+            fprintf(stderr, "Error: CFBurstTrieCreateCursorForBytes failed\n");
+            return EXIT_FAILURE;
+        }
+        // Position cursor at root (empty prefix) to enumerate all keys
+        CFBurstTrieSetCursorForBytes(trie, cursor, nullptr, 0);
+
+        std::vector<CFBurstEntry> entries;
+        CFBurstTrieTraverseFromCursor(cursor, &entries, burst_trie_callback);
+        CFBurstTrieCursorRelease(cursor);
+        CFBurstTrieRelease(trie);
+
+        printf("Keyword count:      %zu\n", entries.size());
+
+        std::sort(entries.begin(), entries.end(),
+                  [](const CFBurstEntry &a, const CFBurstEntry &b){ return a.key < b.key; });
+
+        printf("\n--- Keyword -> Emoji Index Table (%zu entries) ---\n", entries.size());
+        for (const auto &e : entries) {
+            uint32_t start = e.payload & 0x3FFFFF;
+            uint32_t count = (e.payload >> 22) & 0x3FF;
+            printf("%-30s start=0x%-5X count=%-3u -> ", e.key.c_str(), start, count);
+            print_indices(e.payload);
+            printf("\n");
+        }
+    } else {
+        // --- Marisa path: dump raw payload table (keys embedded in trie, not shown) ---
+        printf("\n--- Keyword Payload Table (%u entries) ---\n", payload_count);
+        for (uint32_t i = 0; i < payload_count; i++) {
+            uint32_t p = payload_table[i];
+            uint32_t start = p & 0x3FFFFF;
+            uint32_t count = (p >> 22) & 0x3FF;
+            printf("[%5u] start=0x%-5X count=%-3u -> ", i, start, count);
+            print_indices(p);
+            printf("\n");
+        }
+    }
+
+    free(trie_blob);
+    free(index_array);
+    return EXIT_SUCCESS;
+}
 
 // Metadata flags
 static constexpr uint32_t FLAG_SKIN           = 0x40;
@@ -43,7 +396,6 @@ int hair_style(uint32_t d0) {
     return d0 >> 24;
 }
 
-// TODO: correct?
 int presentation_style(uint32_t d0) {
     if (d0 & FLAG_STYLE_1)
         return 1;
@@ -76,13 +428,14 @@ void read_str(FILE *fp, char *str, size_t maxlen) {
 }
 
 bool is_valid_mode(int m) {
-    return m == 0 || m == 1 || m == 2 || m == 3;
+    return m == 0 || m == 1 || m == 2 || m == 3 || m == 16;
 }
 
 void usage() {
     printf("Usage: emdreader -i <path-to-metadata-dat>\n");
     printf("Usage: emdreader -i <input-dat> -e <export-mode> -o <output-dat>\n");
-    printf("Mode: 3 = iOS 17.0+, 2 = iOS 12.1 - 16.7, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
+    printf("  emojimeta modes: 3 = iOS 17.0+, 2 = iOS 12.1-16.7, 1 = pre-iOS 12.1, 0 = iOS 10.1.1\n");
+    printf("  trie modes:     16 = iOS \u226416 CFBurstTrie (converts from Marisa)\n");
 }
 
 int main(int argc, char *argv[], char *envp[]) {
@@ -144,6 +497,27 @@ int main(int argc, char *argv[], char *envp[]) {
 
     uint32_t count32;
     fread(&count32, 4, 1, fp);
+
+    // Auto-detect FindReplace / trie-index format
+    if (count32 == FINDREPLACE_MAGIC) {
+        if (out && outtype == 16) {
+            fseek(fp, 0, SEEK_SET);
+            int ret = convert_findreplace_v16(fp, fo);
+            fclose(fp);
+            fclose(fo);
+            return ret;
+        } else if (out) {
+            fprintf(stderr, "Error: Use -e 16 to convert FindReplace to iOS \u226416 CFBurstTrie format\n");
+            fclose(fo);
+            fclose(fp);
+            return EXIT_FAILURE;
+        }
+        fseek(fp, 0, SEEK_SET);
+        int ret = read_findreplace(fp);
+        fclose(fp);
+        return ret;
+    }
+
     int count;
     if ((count32 & 0xFFFF) == 0) {
         intype = 3;
