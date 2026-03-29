@@ -74,6 +74,11 @@ convert_trie() {
 
 echo "Converting keyword search index files..."
 
+# Top-level Emoticons.dat (language-neutral, present in all iOS versions)
+if [[ -f "${FRAMEWORK}/Emoticons.dat" ]]; then
+    convert_trie "${FRAMEWORK}/Emoticons.dat" "" "Emoticons"
+fi
+
 # Top-level LocaleData-en.dat (present in iOS 17+)
 if [[ -f "${FRAMEWORK}/LocaleData-en.dat" ]]; then
     convert_trie "${FRAMEWORK}/LocaleData-en.dat" "" "LocaleData-en"

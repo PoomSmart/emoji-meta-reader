@@ -12,6 +12,7 @@ This format is shared across several files:
 | `CharacterPicker.dat` (per-locale in `*.lproj/`) | Emoji picker keyboard keyword index |
 | `StaticAssets/ja.dat` | Japanese keyword index (shared across `ja` locales) |
 | `StaticAssets/zh.shared.dat` | Chinese/Cantonese keyword index (`zh`, `yue`) |
+| `Emoticons.dat` (top-level, language-neutral) | ASCII and Hangul emoticon shortcut→emoji (`:-)`, `<3`, `ㅜㅜ`); each shortcut maps to exactly one emoji |
 
 Locale selection order (from `createEmojiSearchTrie`):
 
@@ -159,10 +160,16 @@ emojimeta.dat[index]  →  emoji character + metadata
 
 ## Format Conversion
 
-Conversion between iOS ≤16 (CFBurstTrie) and iOS 17+ (Marisa) formats is **not supported** by `emdreader` because:
+`emdreader` supports **Marisa → CFBurstTrie** conversion via the `-e 16` flag:
 
-- **CFBurstTrie → Marisa**: requires building a new Marisa trie, which needs `libmarisa` (not linked by this tool)
-- **Marisa → CFBurstTrie**: requires enumerating Marisa keys (needs `libmarisa`) and serializing a new CFBurstTrie
+```bash
+# Convert an iOS 17+ Marisa file to iOS ≤16 CFBurstTrie format
+./bin/emdreader -i LocaleData-en.dat -e 16 -o LocaleData-en_16.dat
+```
+
+The output is a valid `0x3FA8BDD1` file with a serialized CFBurstTrie blob and the same Index Array.
+
+**CFBurstTrie → Marisa** conversion is **not supported**: building a new Marisa trie requires `libmarisa` at build time, which is not linked by this tool.
 
 The **Index Array is identical** in both formats and requires no conversion.
 
@@ -213,6 +220,9 @@ The **Index Array is identical** in both formats and requires no conversion.
 
 # Find all entries mapping to emoji index 0x1
 ./bin/emdreader -i FindReplace-en.dat | grep '0x1[,\]]'
+
+# Convert iOS 17+ Marisa file to iOS ≤16 CFBurstTrie format
+./bin/emdreader -i LocaleData-en.dat -e 16 -o LocaleData-en_16.dat
 ```
 
 ### iOS ≤16 output (keyword strings shown)
